@@ -92,4 +92,3 @@ EVENTS: list[EventConfig] = [
 ]
 
 BY_KEY: dict[str, EventConfig] = {e.key: e for e in EVENTS}
-BY_HOOK: dict[str, EventConfig] = {e.hook_name: e for e in EVENTS if e.matcher is None}

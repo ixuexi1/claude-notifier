@@ -569,7 +569,7 @@ class ConfigWindow(QWidget):
         self._apply_styles()
 
     def _test(self):
-        popen_spawn(notify_args("test"))
+        popen_spawn(notify_args("test", show_ui=True))
 
     def _uninstall(self):
         remove_hooks(self._settings_path)

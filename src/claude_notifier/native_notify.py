@@ -71,16 +71,26 @@ def _windows_toast(title: str, message: str) -> bool:
         return False
 
 
+def _escape_applescript(s: str) -> str:
+    """Escape a string for safe use inside an AppleScript double-quoted string."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _macos_notify(title: str, message: str) -> bool:
+    title_safe = _escape_applescript(title)
+    msg_safe = _escape_applescript(message)
     script = (
-        f'display notification "{message}" with title "{title}"'
+        f'display notification "{msg_safe}" with title "{title_safe}"'
     )
-    subprocess.run(
-        ["osascript", "-e", script],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        timeout=5,
-    )
-    return True
+    try:
+        subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _linux_notify(title: str, message: str) -> bool:

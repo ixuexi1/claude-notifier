@@ -1,7 +1,6 @@
 """CLI entry point — ``cn`` command with all subcommands."""
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 

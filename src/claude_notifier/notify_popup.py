@@ -1,10 +1,8 @@
 import ctypes
 import json
 import os
-import subprocess
 import sys
 from ctypes import wintypes
-from pathlib import Path
 
 from claude_notifier.events import BY_KEY
 from claude_notifier.frozen import notify_args, popen_spawn
