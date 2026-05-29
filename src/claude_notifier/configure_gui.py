@@ -16,6 +16,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QScrollArea, QSpinBox,
+    QMessageBox,
 )
 
 from claude_notifier import config
@@ -23,6 +24,7 @@ from claude_notifier.events import EVENTS
 from claude_notifier.frozen import notify_args, popen_spawn
 from claude_notifier.glass import apply_glass
 from claude_notifier.hooks import (
+    ConfigError,
     find_settings_path,
     read_settings,
     install_hooks,
@@ -476,6 +478,15 @@ class ConfigWindow(QWidget):
             QPushButton#applyButton:pressed {
                 background: rgba(0,200,255,0.15);
             }
+            QPushButton#applyButton[applied="true"] {
+                color: #22C55E;
+                border: 1.5px solid rgba(34, 197, 94, 0.5);
+                background: rgba(34, 197, 94, 0.08);
+            }
+            QPushButton#applyButton[applied="true"]:hover {
+                background: rgba(34, 197, 94, 0.15);
+                border: 1.5px solid rgba(34, 197, 94, 0.7); color: #FFF;
+            }
 
             QPushButton#auxButton {
                 color: rgba(180,210,240,0.6);
@@ -507,6 +518,15 @@ class ConfigWindow(QWidget):
     # ── Logic ──
 
     def _scan(self):
+        try:
+            self._do_scan()
+        except ConfigError as e:
+            QMessageBox.critical(
+                self, "Settings Error",
+                f"Cannot read settings:\n\n{e.detail}\n\n"
+                f"File: {e.path}")
+
+    def _do_scan(self):
         p = find_settings_path()
         if p is None:
             p = Path.home() / ".claude" / "settings.json"
@@ -537,12 +557,20 @@ class ConfigWindow(QWidget):
         self.duration_spin.setValue(max(1, duration_ms // 1000))
 
     def _apply(self):
+        try:
+            self._do_apply()
+        except ConfigError as e:
+            QMessageBox.critical(
+                self, "Settings Error",
+                f"Cannot apply settings:\n\n{e.detail}\n\n"
+                f"File: {e.path}")
+
+    def _do_apply(self):
         # Collect which events the user wants enabled
         wanted = sorted(
             key for key, btn in self._event_toggles.items()
             if btn.isChecked()
         )
-        # install_hooks now removes hooks that aren't in the wanted list
         install_hooks(event_keys=wanted, settings_path=self._settings_path)
 
         # Persist sound / duration preferences
@@ -555,18 +583,16 @@ class ConfigWindow(QWidget):
 
     def _flash_button(self):
         self.btn_apply.setText("√  已应用")    # √  已应用
-        self.btn_apply.setStyleSheet(self.btn_apply.styleSheet() + """
-            QPushButton#applyButton {
-                color: #22C55E;
-                border: 1.5px solid rgba(34, 197, 94, 0.5);
-                background: rgba(34, 197, 94, 0.08);
-            }
-        """)
+        self.btn_apply.setProperty("applied", True)
+        self.btn_apply.style().unpolish(self.btn_apply)
+        self.btn_apply.style().polish(self.btn_apply)
         QTimer.singleShot(2000, self._reset_button)
 
     def _reset_button(self):
         self.btn_apply.setText("应  用  配  置")  # 应  用  配  置
-        self._apply_styles()
+        self.btn_apply.setProperty("applied", False)
+        self.btn_apply.style().unpolish(self.btn_apply)
+        self.btn_apply.style().polish(self.btn_apply)
 
     def _test(self):
         popen_spawn(notify_args("test", show_ui=True))
@@ -615,6 +641,10 @@ def main():
         )
 
     w.show()
+    # Safety timeout: if the Qt event loop gets stuck (rare DWM
+    # interaction issue with frameless acrylic windows), force exit
+    # so the process doesn't become a zombie.
+    QTimer.singleShot(1_800_000, app.quit)
     sys.exit(app.exec())
 
 

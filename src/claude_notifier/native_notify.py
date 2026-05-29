@@ -103,7 +103,14 @@ def _linux_notify(title: str, message: str) -> bool:
 
 
 def can_show_glass() -> bool:
-    """Check whether the full PySide6 glassmorphism popup can be used."""
+    """Check whether the full PySide6 glassmorphism popup can be used.
+
+    Glass effects are Windows DWM only.  Even if PySide6 is installed
+    on other platforms the acrylic blur won't work, so we fall back to
+    native notifications there.
+    """
+    if sys.platform != "win32":
+        return False
     try:
         from PySide6.QtWidgets import QApplication  # noqa: F401
         return True

@@ -83,6 +83,10 @@ def cmd_sound(args):
 
 def cmd_configure(args):
     """``cn configure`` — open the PySide6 GUI configurator window."""
+    from claude_notifier.native_notify import can_show_glass
+    if not can_show_glass():
+        print("✗ GUI configurator requires Windows with PySide6 installed.")
+        return
     popen_spawn(config_gui_args())
     print("✓ GUI configurator launched")
 
@@ -128,12 +132,18 @@ def main():
         "configure": cmd_configure,
     }
 
+    from claude_notifier.hooks import ConfigError
+
     handler = handlers.get(args.command)
     if handler is None:
         parser.print_help()
         return
 
-    handler(args)
+    try:
+        handler(args)
+    except ConfigError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        raise SystemExit(1) from e
 
 
 if __name__ == "__main__":

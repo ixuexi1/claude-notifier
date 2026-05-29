@@ -12,7 +12,12 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 
 from claude_notifier import __version__, config
 from claude_notifier.frozen import notify_args, config_gui_args, popen_spawn
-from claude_notifier.hooks import hooks_status, find_settings_path, remove_hooks
+from claude_notifier.hooks import (
+    ConfigError,
+    hooks_status,
+    find_settings_path,
+    remove_hooks,
+)
 
 
 def _make_icon(colour: QColor) -> QIcon:
@@ -78,11 +83,17 @@ class NotifierTray:
     # ── actions ──
 
     def _update_icon(self) -> None:
-        status = hooks_status(find_settings_path())
-        active = any(status.values())
+        try:
+            status = hooks_status(find_settings_path())
+            active = any(status.values())
+        except ConfigError:
+            active = False
         self.tray.setIcon(self._icon_active if active else self._icon_inactive)
 
-        cfg = config.load()
+        try:
+            cfg = config.load()
+        except ConfigError:
+            return
         self.a_sound.setChecked(cfg.get("sound_enabled", True))
 
     def _open_config(self) -> None:
@@ -90,9 +101,13 @@ class NotifierTray:
         popen_spawn(config_gui_args())
 
     def _toggle_sound(self) -> None:
-        config.set_("sound_enabled", self.a_sound.isChecked())
+        try:
+            config.set_("sound_enabled", self.a_sound.isChecked())
+        except ConfigError:
+            pass
 
     def _quit(self) -> None:
+        self._timer.stop()
         remove_hooks()
         self.tray.hide()
         self.app.quit()

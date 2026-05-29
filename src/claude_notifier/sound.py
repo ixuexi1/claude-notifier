@@ -79,7 +79,7 @@ def _play_file(path: str) -> None:
             winsound.PlaySound(
                 path, winsound.SND_FILENAME | winsound.SND_ASYNC)
         elif sys.platform == "darwin":
-            subprocess.run(
+            subprocess.Popen(
                 ["afplay", path],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:

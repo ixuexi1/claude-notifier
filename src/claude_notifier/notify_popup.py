@@ -9,6 +9,29 @@ from claude_notifier.frozen import notify_args, popen_spawn
 from claude_notifier.glass import apply_glass, paint_glass_background
 from claude_notifier.native_notify import can_show_glass, show_native
 
+# ── Named mutex for single-popup enforcement (Windows) ─────────────
+# A named mutex is atomic, auto-released on process exit, and immune
+# to PID reuse — strictly safer than a PID file.
+# Local\\ prefix keeps it session-scoped (no admin privilege needed).
+
+_MUTEX_NAME = "Local\\ClaudeNotifierUIPopup"
+_ui_mutex_handle: int = 0
+
+
+def _acquire_ui_mutex() -> bool:
+    """Try to acquire the single-popup mutex.  Returns ``True`` if this
+    process should show UI; ``False`` if another popup is already running."""
+    global _ui_mutex_handle
+    if sys.platform != "win32":
+        return True
+    handle = ctypes.windll.kernel32.CreateMutexW(None, True, _MUTEX_NAME)
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+        return False
+    _ui_mutex_handle = handle or 0
+    return handle != 0
+
 # Sound is best-effort — the popup must never crash
 try:
     from claude_notifier import sound
@@ -23,6 +46,23 @@ if can_show_glass():
     from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Property
     from PySide6.QtGui import QPainter, QColor
     from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel
+else:
+    # Stub — prevents NameError at import time when PySide6 is missing.
+    # _run_ui() guards all glass-path code with a runtime can_show_glass()
+    # check, so these stubs are never actually called.
+    QWidget = object  # type: ignore
+    QApplication = None  # type: ignore
+    QTimer = None  # type: ignore
+    Qt = None  # type: ignore
+    QPropertyAnimation = None  # type: ignore
+    QEasingCurve = None  # type: ignore
+    QPainter = None  # type: ignore
+    QColor = None  # type: ignore
+    QVBoxLayout = None  # type: ignore
+    QLabel = None  # type: ignore
+
+    def Property(_type, fget=None, fset=None):  # type: ignore
+        return property(fget, fset)
 
 # ══════════════════════════════════════════
 # Low-level keyboard hook (WH_KEYBOARD_LL)
@@ -64,7 +104,10 @@ if sys.platform == "win32":
                 popup = _hook_popup
                 if popup is not None:
                     popup._start_fade_out()
-                    return 1  # non-zero = swallow the key, don't pass to other hooks
+                    # Return 0 so the key still reaches the active
+                    # application — the popup dismisses without
+                    # stealing the keystroke.
+                    return 0
         return ctypes.windll.user32.CallNextHookEx(None, nCode, wParam, lParam)
 
     _hook_proc = LowLevelKeyboardProc(_keyboard_hook)
@@ -232,8 +275,11 @@ class NotificationPopup(QWidget):
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.start()
 
-        from claude_notifier.config import get
-        duration = get("popup_duration_ms") or 5000
+        try:
+            from claude_notifier.config import get
+            duration = get("popup_duration_ms") or 5000
+        except Exception:
+            duration = 5000
         QTimer.singleShot(duration, self._start_fade_out)
 
 
@@ -242,7 +288,9 @@ class NotificationPopup(QWidget):
 # ══════════════════════════════════════════
 
 _UI_FLAG = "--show-ui"
-_CTX_ENV = "CLAUDE_NOTIFIER_CTX"
+# Only the tool_name is passed via env var (not the full hook context)
+# to keep the environment block small and avoid leaking hook internals.
+_TOOL_ENV = "CLAUDE_NOTIFIER_TOOL"
 
 
 def _read_hook_stdin() -> dict | None:
@@ -255,14 +303,10 @@ def _read_hook_stdin() -> dict | None:
         return None
 
 
-def _read_ctx_from_env() -> dict | None:
-    raw = os.environ.get(_CTX_ENV)
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+def _read_tool_name() -> str | None:
+    """Read the tool name passed from the hook process via env var."""
+    raw = os.environ.get(_TOOL_ENV)
+    return raw.strip() if raw else None
 
 
 def _tool_name_from_ctx(ctx: dict | None) -> str | None:
@@ -275,21 +319,22 @@ def _spawn_ui_process(event_key: str, ctx: dict | None) -> None:
     """Start the popup in a detached process so the hook can exit immediately.
 
     Claude Code hooks block until the hook process exits.  We therefore
-    do the minimum work here (parse stdin, serialise context to an env
-    var) and hand off the actual UI to a child process that outlives us.
+    do the minimum work here (parse stdin) and hand off the actual UI
+    to a child process that outlives us.  Only the tool_name is passed
+    to the child — the full hook context stays in this process.
     """
     env = os.environ.copy()
-    if ctx is not None:
-        env[_CTX_ENV] = json.dumps(ctx, ensure_ascii=False)
+    tool_name = _tool_name_from_ctx(ctx)
+    if tool_name:
+        env[_TOOL_ENV] = tool_name
     else:
-        env.pop(_CTX_ENV, None)
+        env.pop(_TOOL_ENV, None)
 
     popen_spawn(notify_args(event_key, show_ui=True), env=env)
 
 
-def _run_ui(event_key: str, ctx: dict | None) -> None:
+def _run_ui(event_key: str, tool_name: str | None = None) -> None:
     event = BY_KEY.get(event_key, BY_KEY["stop"])
-    tool_name = _tool_name_from_ctx(ctx)
 
     icon = event.icon
     title = event.title
@@ -298,6 +343,12 @@ def _run_ui(event_key: str, ctx: dict | None) -> None:
         message = f"{message}: {tool_name}"
 
     if can_show_glass():
+        # If another popup is already showing, skip this one.
+        # The existing popup will auto-dismiss shortly and the next
+        # hook will be picked up.
+        if not _acquire_ui_mutex():
+            return
+
         app = QApplication.instance() or QApplication(sys.argv)
         try:
             app.setStyle("Fusion")
@@ -310,6 +361,18 @@ def _run_ui(event_key: str, ctx: dict | None) -> None:
                 sound.play(event.category)
         except Exception:
             pass
+
+        # Force-deadline: app.exec() should return after the popup
+        # dismisses, but a safety timer guarantees the process exits
+        # even if the Qt event loop gets stuck (e.g. DWM interaction
+        # with frameless translucent windows on some Windows builds).
+        try:
+            from claude_notifier.config import get  # noqa: E402
+            deadline = (get("popup_duration_ms") or 5000) + 15000
+        except Exception:
+            deadline = 20000  # safe default
+        QTimer.singleShot(deadline, app.quit)
+
         app.exec()
     else:
         show_native(title, message)
@@ -321,7 +384,7 @@ def main():
     event_key = argv[1] if len(argv) > 1 else "stop"
 
     if show_ui:
-        _run_ui(event_key, _read_ctx_from_env())
+        _run_ui(event_key, _read_tool_name())
         return
 
     # Claude Code hooks pipe JSON on stdin and wait for this process to exit.
@@ -332,7 +395,7 @@ def main():
         return
 
     # Manual run / ``cn test`` (inherits a TTY stdin).
-    _run_ui(event_key, None)
+    _run_ui(event_key)
 
 
 if __name__ == "__main__":
